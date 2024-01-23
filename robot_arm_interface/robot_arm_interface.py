@@ -21,6 +21,10 @@ class Arm_Interface(Node):
         self.create_servo_params()
         self.servo_command_values = [90] * 6
 
+        self.tolerance = 1.0
+
+        self.timer = rclpy.timer.Timer(self.command_servos(), 0.005)
+
         # Declare parameters callback
         self.add_on_set_parameters_callback(self.parameters_callback)
 
@@ -47,45 +51,62 @@ class Arm_Interface(Node):
                 index = int(param.name.replace('servo_', '')) - 1
 
                 self.servo_command_values[index] = param.value
-
-        self.command_servos()
         
         return SetParametersResult(successful=True)
 
     # Commands servos to move at a much slower speed than max
     # This means the arm is not jerking around all of the time
-    # Could go more complex with like a PID controller but not worth
-    # Because motor state feedback is nonexistent
     def command_servos(self):
+
+        servo_states = self.get_servo_states()
+        
+        if self.is_good_enough(servo_states, self.servo_command_values):
+            return
+        
+        # Increment each servo position
         for i in range(len(self.servo_command_values)):
+
             command_val = self.servo_command_values[i]
-            good_enough = False
-            while (self.kit.servo[i].angle != command_val) and good_enough == False:
+            servo_state = servo_states[i]
 
-                # Handle when servo has been adjusted to value outside of range manually
-                if self.kit.servo[i].angle is None: 
-                    self.kit.servo[i].angle = command_val
-                    differnece = 0
-                else: difference = command_val - self.kit.servo[i].angle
+            # If the servo position is outside of the recognized ranges, just assume angle
+            if servo_state is None:
+                self.kit.servo[i].angle = command_val
 
-                
-                if abs(difference) < 1:
-                    good_enough = True
-                else: pass
-
+            # Only adjust position if the servo is not already at target
+            if not self.is_good_enough([servo_state], [command_val]):
+                difference = command_val - servo_state
                 self.log.info("Difference: {}".format(difference))
-                increment = difference / 12
-                # Make sure increment never passes below the inaction threshold
-                # Maintains the current sign
-                if abs(increment) < 0.6:
-                    if increment < 0: increment = -0.6
-                    else: increment = 0.6
-                if self.kit.servo[i].angle + increment > 180 or self.kit.servo[i].angle + increment < 0:
-                    good_enough = True
-                else:
-                    self.kit.servo[i].angle += increment
-                time.sleep(0.005)
+            else: difference = 0
 
+            # Temporary slow mechanism till we get PID control
+            increment = difference / 12
+            
+            # Make sure that increment never passes below the inaction threshold
+            if abs(increment) < 0.6:
+                if increment < 0: increment = -0.6
+                else: increment = 0.6 
+            # If it's close enough to the edge that it doesn't matter
+            if self.kit.servo[i].angle + increment > 180 or self.kit.servo[i].angle + increment < 0:
+                increment = 0
+
+            # Adjust servo position
+            self.kit.servo[i].angle += increment
+
+    # Compares the servo states and their command values. If it's within tolerance, return true
+    def is_good_enough(self, states, commands):
+        for i in range(len(states)):
+            if abs(states[i] - commands[i]) > self.tolerance:
+                return False
+        return True
+
+    # Get servo states into a list
+    def get_servo_states(self):
+        servo_states = []
+        for servo in self.kit.servo:
+            servo_states.append(servo.angle)
+        return servo_states
+        
 # Run the node
 def main(args=None):
     rclpy.init(args=args)
